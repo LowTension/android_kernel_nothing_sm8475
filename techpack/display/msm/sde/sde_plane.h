@@ -359,4 +359,7 @@ void sde_plane_static_img_control(struct drm_plane *plane,
 		enum sde_crtc_cache_state state);
 
 void sde_plane_add_data_to_minidump_va(struct drm_plane *plane);
+
+int sde_plane_is_fod_layer(const struct drm_plane_state *drm_state);
+
 #endif /* _SDE_PLANE_H_ */
