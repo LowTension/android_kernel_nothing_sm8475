@@ -970,6 +970,15 @@ static int _sde_connector_update_hdr_metadata(struct sde_connector *c_conn,
 	return rc;
 }
 
+static bool sde_connector_fod_dim_layer_status(struct sde_connector *c_conn)
+{
+	if (!c_conn->encoder || !c_conn->encoder->crtc ||
+	    !c_conn->encoder->crtc->state)
+		return false;
+
+	return !!to_sde_crtc_state(c_conn->encoder->crtc->state)->fod_dim_layer;
+}
+
 static int _sde_connector_update_dirty_properties(
 				struct drm_connector *connector)
 {
@@ -1027,6 +1036,11 @@ static int _sde_connector_update_dirty_properties(
 static int _sde_connector_update_finger_hbm_status(
 				struct drm_connector *connector)
 {
+        bool dirty_fingerlayer;
+        bool finger_flag_active;
+	bool status;
+	static atomic_t finger_flag_status = ATOMIC_INIT(false);
+	static atomic_t fingerlayer_status = ATOMIC_INIT(false);
 	struct sde_connector *c_conn;
 	struct sde_connector_state *c_state;
 	struct dsi_display * display;
@@ -1046,9 +1060,16 @@ static int _sde_connector_update_finger_hbm_status(
 		return -EINVAL;
 	}
 
-	if ((!c_conn->fingerlayer_dirty) && (finger_hbm_flag == c_conn->finger_flag)) {
-		return 0;
+        dirty_fingerlayer = !!(c_conn->fingerlayer_dirty);
+        finger_flag_active = !!(c_conn->finger_flag);
+        if ((atomic_xchg(&fingerlayer_status, c_conn->fingerlayer_dirty) == dirty_fingerlayer) 
+              && (atomic_xchg(&finger_flag_status, c_conn->finger_flag) == finger_flag_active)) {
+	        return 0;
 	}
+
+        status = sde_connector_fod_dim_layer_status(c_conn);
+        if ((!c_conn->fingerlayer_dirty) && (status == dsi_panel_get_fod_ui(display->panel))) 
+                return 0;
 
 	if (display->panel->power_mode == SDE_MODE_DPMS_OFF) {
 		SDE_ERROR("panel in power off\n");
@@ -1056,7 +1077,10 @@ static int _sde_connector_update_finger_hbm_status(
 	}
 
 	SDE_ATRACE_BEGIN("_sde_connector_update_finger_hbm_statuss");
-	finger_hbm_flag = c_conn->finger_flag;
+        if (!c_conn->fingerlayer_dirty)
+                finger_hbm_flag = status;
+        else
+                finger_hbm_flag = c_conn->finger_flag;
 	if (finger_hbm_flag) {
 		SDE_ERROR("open hbm");
 		if ((c_conn->lp_mode == SDE_MODE_DPMS_LP1) ||
@@ -1083,7 +1107,10 @@ static int _sde_connector_update_finger_hbm_status(
 		}
 	}
 
-	c_conn->fingerlayer_dirty = false;
+        if (!c_conn->fingerlayer_dirty)
+	        dsi_panel_set_fod_ui(display->panel, finger_hbm_flag);
+        else
+                c_conn->fingerlayer_dirty = false;
 	SDE_ATRACE_END("_sde_connector_update_finger_hbm_statuss");
 	return 0;
 }
