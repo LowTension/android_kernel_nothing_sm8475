@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)    "%s: " fmt, __func__
@@ -464,6 +464,7 @@ static void helios_coredump(struct rproc *rproc)
 					__func__, helios->cmd_status);
 			goto exit;
 		}
+		dma_sync_single_for_cpu(helios->dev, start_addr, size, DMA_FROM_DEVICE);
 		memcpy(full_ramdump_buffer + buffer_size, region, size);
 		buffer_size += size;
 	} while (helios->cmd_status == HELIOS_APP_PARTIAL_RAMDUMP);
@@ -802,7 +803,6 @@ static int rproc_helios_driver_probe(struct platform_device *pdev)
 	if (ret)
 		goto free_rproc;
 
-	qcom_add_ssr_subdev(rproc, &helios->ssr_subdev, helios->ssr_name);
 
 	qcom_add_glink_subdev(rproc, &helios->glink_subdev, helios->ssr_name);
 
@@ -815,6 +815,7 @@ static int rproc_helios_driver_probe(struct platform_device *pdev)
 		goto deinit_wakeup_source;
 	}
 
+	qcom_add_ssr_subdev(rproc, &helios->ssr_subdev, helios->ssr_name);
 	/* Register callback for Helios Crash with heliosCom */
 	helios->config_type.priv = (void *)rproc;
 	helios->config_type.helioscom_reset_notification_cb = helios_crash_handler;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2020-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/iommu.h>
@@ -1306,17 +1306,12 @@ int a6xx_hwsched_cp_init(struct adreno_device *adreno_dev)
 
 int a6xx_hwsched_counter_inline_enable(struct adreno_device *adreno_dev,
 		const struct adreno_perfcount_group *group,
-		unsigned int counter, unsigned int countable)
+		u32 counter, u32 countable)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct adreno_perfcount_register *reg = &group->regs[counter];
-	u32 cmds[A6XX_PERF_COUNTER_ENABLE_DWORDS + 1];
+	u32 val, cmds[A6XX_PERF_COUNTER_ENABLE_DWORDS + 1];
 	int ret;
-	char str[64];
-
-	if (!(device->state == KGSL_STATE_ACTIVE))
-		return a6xx_counter_enable(adreno_dev, group, counter,
-			countable);
 
 	if (group->flags & ADRENO_PERFCOUNTER_GROUP_RESTORE)
 		a6xx_perfcounter_update(adreno_dev, reg, false);
@@ -1328,13 +1323,21 @@ int a6xx_hwsched_counter_inline_enable(struct adreno_device *adreno_dev,
 	cmds[2] = cp_type4_packet(reg->select, 1);
 	cmds[3] = countable;
 
-	snprintf(str, sizeof(str), "Perfcounter %s/%u/%u start via commands failed\n",
-			group->name, counter, countable);
+	ret = a6xx_hfi_send_cmd_async(adreno_dev, cmds);
+	if (ret)
+		goto err;
 
-	ret = submit_raw_cmds(adreno_dev, cmds, str);
-	if (!ret)
+	/* Wait till the register is programmed with the countable */
+	ret = kgsl_regmap_read_poll_timeout(&device->regmap, reg->select, val,
+				val == countable, 100, ADRENO_IDLE_TIMEOUT);
+	if (!ret) {
 		reg->value = 0;
+		return ret;
+	}
 
+err:
+	dev_err(device->dev, "Perfcounter %s/%u/%u start via commands failed\n",
+			group->name, counter, countable);
 	return ret;
 }
 
@@ -1417,6 +1420,9 @@ static void a6xx_add_profile_events(struct adreno_device *adreno_dev,
 	struct kgsl_context *context = drawobj->context;
 	struct submission_info info = {0};
 
+	if (!time)
+		return;
+
 	/*
 	 * Here we are attempting to create a mapping between the
 	 * GPU time domain (alwayson counter) and the CPU time domain
@@ -1483,7 +1489,10 @@ static int send_context_register(struct adreno_device *adreno_dev,
 {
 	struct hfi_register_ctxt_cmd cmd;
 	struct kgsl_pagetable *pt = context->proc_priv->pagetable;
-	int ret;
+	int ret, asid = kgsl_mmu_pagetable_get_asid(pt, context);
+
+	if (asid < 0)
+		return asid;
 
 	ret = CMD_MSG_HDR(cmd, H2F_MSG_REGISTER_CONTEXT);
 	if (ret)
@@ -1491,7 +1500,15 @@ static int send_context_register(struct adreno_device *adreno_dev,
 
 	cmd.ctxt_id = context->id;
 	cmd.flags = HFI_CTXT_FLAG_NOTIFY | context->flags;
-	cmd.pt_addr = kgsl_mmu_pagetable_get_ttbr0(pt);
+
+	/*
+	 * HLOS SMMU driver programs context bank to look up ASID from TTBR0 during a page
+	 * table walk. So the TLB entries are tagged with the ASID from TTBR0. TLBIASID
+	 * invalidates TLB entries whose ASID matches the value that was written to the
+	 * CBn_TLBIASID register. Set ASID along with PT address.
+	 */
+	cmd.pt_addr = kgsl_mmu_pagetable_get_ttbr0(pt) |
+		FIELD_PREP(GENMASK_ULL(63, KGSL_IOMMU_ASID_START_BIT), asid);
 	cmd.ctxt_idr = pid_nr(context->proc_priv->pid);
 	cmd.ctxt_bank = kgsl_mmu_pagetable_get_context_bank(pt, context);
 
